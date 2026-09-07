@@ -2,7 +2,7 @@
 
 Full pricing pipeline for a motor third-party liability portfolio, comparing a classical GLM approach against modern machine-learning methods. Frequency-severity decomposition, separation of attritional and large claims (EVT), and a benchmarked pure-premium calculation.
 
-Academic project (M2 Actuariat, ISFA — Advanced Pricing), supervised by Prof. Esterina Masiello. Co-authored with S. Diouf, C. A. D. Kouamé and S. Ouattara.
+Academic project (M2 Actuariat, ISFA — Advanced Pricing), Co-authored with S. Diouf, C. A. D. Kouamé and S. Ouattara.
 
 ## What this project does
 
