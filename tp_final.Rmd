@@ -1,0 +1,960 @@
+---
+title: "Tarification RC Automobile : Preparation, Analyse Exploratoire et Modelisation"
+author:
+  - "DIOUF Salimata"
+  - "KOUAME Christ Ange Dylan"
+  - "OUATTARA Aboubakar Mohamed"
+  - "OUATTARA Souleymane"
+---
+
+## 1. Chargement et exploration initiale des donnees
+
+```{r}
+library(CASdatasets)
+
+data(freMTPLfreq)
+data(freMTPLsev)
+
+dim(freMTPLfreq)
+dim(freMTPLsev)
+
+sum(freMTPLfreq$ClaimNb)
+nrow(freMTPLsev)
+
+head(freMTPLfreq)
+head(freMTPLsev)
+
+summary(freMTPLfreq)
+summary(freMTPLsev)
+
+sapply(freMTPLfreq, class)
+```
+
+## 2. Fusion des bases et construction de la base complete
+
+```{r}
+# Fusion des deux bases par police
+freMTPLsevall <- merge(freMTPLsev, freMTPLfreq, by = "PolicyID", all.x = TRUE, all.y = FALSE)
+dim(freMTPLsevall)
+
+varlist <- c("Exposure", "Power", "CarAge", "DriverAge", "Brand", "Gas", "Region", "Density")
+
+# Agregation du cout total par police
+sevbypol <- aggregate(ClaimAmount ~ PolicyID, data = freMTPLsev, FUN = sum)
+
+colnames(sevbypol) <- c("PolicyID", "TotalClaim")
+
+# Ajout du cout total a la base frequence
+freMTPLfreqall <- merge(freMTPLfreq, sevbypol, by = "PolicyID", all.x = TRUE, all.y = FALSE)
+
+freMTPLfreqall$TotalClaim[is.na(freMTPLfreqall$TotalClaim)] <- 0
+```
+
+## 3. Nettoyage des donnees
+
+```{r}
+colSums(is.na(freMTPLfreqall))
+colSums(is.na(freMTPLsevall))
+
+# Filtrage exposition > 1 
+hist(freMTPLfreqall$Exposure, col = "pink")
+
+sum(freMTPLfreqall$Exposure > 1)
+freMTPLfreqall[freMTPLfreqall$Exposure > 1, ]
+
+summary(freMTPLfreqall[freMTPLfreqall$Exposure > 1, "ClaimNb"])
+(sum(freMTPLfreqall[freMTPLfreqall$Exposure > 1, "TotalClaim"]) / sum(freMTPLfreqall[, "TotalClaim"])) * 100
+(sum(freMTPLfreqall[freMTPLfreqall$Exposure > 1, "ClaimNb"])   / sum(freMTPLfreqall[, "ClaimNb"])) * 100
+
+summary(freMTPLfreqall[freMTPLfreqall$Exposure <= 1, "ClaimNb"])
+
+basefreq <- subset(freMTPLfreqall, Exposure <= 1 & TotalClaim >= 0)
+basecout <- subset(freMTPLsevall,  Exposure <= 1)
+
+# Filtrage CarAge > 20 
+hist(freMTPLfreqall$CarAge, col = "pink")
+tail(sort(freMTPLfreqall$CarAge), 50)
+
+sum(freMTPLfreqall$CarAge > 20)
+
+basefreq <- subset(basefreq, CarAge <= 20)
+basecout <- subset(basecout, CarAge <= 20)
+
+# Suppression des valeurs aberrantes supplementaires
+# Frequences negatives
+cat("ClaimNb < 0 :", sum(basefreq$ClaimNb < 0), "\n")
+basefreq <- subset(basefreq, ClaimNb >= 0)
+
+# Montants negatifs ou nuls
+cat("ClaimAmount <= 0 :", sum(basecout$ClaimAmount <= 0), "\n")
+basecout <- subset(basecout, ClaimAmount > 0)
+
+# Densite negative ou nulle
+cat("Density <= 0 :", sum(basefreq$Density <= 0), "\n")
+basefreq <- subset(basefreq, Density > 0)
+
+# Age conducteur hors plage [16, 80]
+cat("DriverAge hors [16,80] :", sum(basefreq$DriverAge < 16 | basefreq$DriverAge > 80), "\n")
+basefreq <- subset(basefreq, DriverAge >= 16 & DriverAge <= 80)
+basecout <- basecout[basecout$PolicyID %in% basefreq$PolicyID, ]
+
+cat("Dimensions apres nettoyage complet :\n")
+cat("  basefreq :", nrow(basefreq), "polices\n")
+cat("  basecout :", nrow(basecout), "sinistres\n")
+```
+
+```{r}
+summary(freMTPLfreqall$CarAge)
+basecout
+basefreq
+sum(basecout$ClaimAmount)
+```
+
+## 4. Traitement des sinistres atypiques (CAT)
+
+```{r}
+(thres <- quantile(basecout$ClaimAmount, probs = 0.975))
+
+basecoutattri <- subset(basecout, ClaimAmount <= thres)
+basecoutatyp  <- subset(basecout, ClaimAmount > thres)
+
+sum(basecoutattri$ClaimAmount)
+sum(basecoutatyp$ClaimAmount)
+
+cat("Part sinistres atypiques dans le cout total : 44.15%\n")
+basecoutattri
+basecoutatyp
+```
+
+```{r}
+sum(basecoutatyp$ClaimAmount) / sum(basecout$ClaimAmount)
+```
+
+```{r}
+(prime.cat <- sum(basecoutatyp$ClaimAmount) / nrow(basefreq))
+
+summary(basecout$ClaimAmount)
+summary(basecoutattri$ClaimAmount)
+summary(basecoutatyp$ClaimAmount)
+
+par(mfrow = c(1, 2))
+plot(density(basecoutattri$ClaimAmount), main = "Densite - Attritionnels",
+     xlab = "EUR", xlim = c(2, 10000))
+plot(density(basecoutatyp$ClaimAmount),  main = "Densite - Atypiques",
+     xlab = "EUR", xlim = c(35392, 500000))
+par(mfrow = c(1, 1))
+```
+
+## 5. Analyse exploratoire univariee
+
+### 5.1 Frequence sinistre et charge annuelle
+
+```{r}
+var_quali  <- c("Power", "Brand", "Gas", "Region")
+var_quanti <- c("CarAge", "DriverAge", "Density")
+
+basefreq$HasClaim <- ifelse(basefreq$ClaimNb > 0, 1, 0)
+
+tab_sin  <- table(basefreq$HasClaim)
+prop_sin <- prop.table(tab_sin)
+
+cat("Nombre de contrats non sinistres :", tab_sin["0"], "\n")
+cat("Nombre de contrats sinistres     :", tab_sin["1"], "\n")
+cat("Proportion non sinistres         :", round(100 * prop_sin["0"], 2), "%\n")
+cat("Proportion sinistres             :", round(100 * prop_sin["1"], 2), "%\n")
+
+barplot(tab_sin,
+        col       = c("lightblue", "salmon"),
+        names.arg = c("Non sinistres", "Sinistres"),
+        main      = "Repartition des contrats sinistres / non sinistres",
+        ylab      = "Nombre de contrats")
+
+freq_annuelle <- sum(basefreq$ClaimNb) / sum(basefreq$Exposure)
+cat("Frequence annuelle globale :", round(freq_annuelle, 6), "sinistre/an\n")
+```
+
+```{r}
+summary(basefreq$TotalClaim)
+
+charge_sinistres <- basefreq$TotalClaim[basefreq$HasClaim == 1]
+charge_non_sin   <- basefreq$TotalClaim[basefreq$HasClaim == 0]
+
+cat("Charge moyenne des contrats sinistres     :", round(mean(charge_sinistres), 2), "EUR\n")
+cat("Charge moyenne des contrats non sinistres :", round(mean(charge_non_sin),   2), "EUR\n")
+
+boxplot(TotalClaim ~ HasClaim, data = basefreq,
+        names = c("Non sinistres", "Sinistres"),
+        col   = c("lightblue", "salmon"),
+        main  = "Charge annuelle selon le statut sinistre",
+        ylab  = "Charge annuelle (EUR)")
+```
+
+### 5.2 Analyse graphique par variable (fonction graphSinistre)
+
+```{r}
+graphSinistre <- function(facteur.risque, expo, reponse, basenb,
+                          texte = "Probabilite empirique annualisee d'etre sinistre",
+                          niveau, continu = TRUE)
+{
+  if (continu == TRUE)  { X <- cut(basenb[, facteur.risque], niveau, include.lowest = TRUE) }
+  if (continu == FALSE) { X <- as.factor(basenb[, facteur.risque]) }
+  E <- basenb[, expo]
+  Y <- basenb[, reponse]
+  FREQ <- levels(X)
+  moyenne <- variance <- n <- rep(NA, length(FREQ))
+  for (k in 1:length(FREQ))
+  {
+    moyenne[k] <- mean(Y[X == FREQ[k]], na.rm = TRUE)
+    variance[k] <- var(Y[X == FREQ[k]], na.rm = TRUE)
+    n[k] <- sum(E[X == FREQ[k]], na.rm = TRUE)
+  }
+  w <- barplot(n, names.arg = FREQ, col = "light green", axes = FALSE,
+               xlim = c(0, 1.2 * length(FREQ) + .5))
+  mid <- w[, 1]
+  axis(2, col = "light green"); par(new = TRUE)
+  IC1 <- moyenne + 1.96 / sqrt(n) * sqrt(variance)
+  IC2 <- pmax(moyenne - 1.96 / sqrt(n) * sqrt(variance), 0)
+  moyenneglobale <- mean(Y)
+  plot(mid, moyenne, ylim = range(c(IC1, IC2)), type = "b", col = "red",
+       axes = FALSE, xlab = facteur.risque, ylab = "",
+       xlim = c(0, 1.2 * length(FREQ) + .5))
+  segments(mid, IC1, mid, IC2, col = "red")
+  segments(mid - .1, IC1, mid + .1, IC1, col = "red")
+  segments(mid - .1, IC2, mid + .1, IC2, col = "red")
+  points(mid, moyenne, pch = 19, col = "red")
+  axis(4, col = "red"); abline(h = moyenneglobale, lty = 2, col = "red")
+  mtext("Exposition", 2, line = 2, cex = 1.2, col = "light green")
+  mtext(texte, 4, line = -2, cex = 1.2, col = "red")
+}
+
+par(mar = c(4, 4, 2, 2))
+
+for (v in varlist)
+{
+  if (is.factor(basefreq[, v]))
+  {
+    iscontinu <- FALSE
+    niveau    <- NULL
+  } else {
+    iscontinu <- TRUE
+    niveau    <- unique(quantile(basefreq[, v], probs = seq(0, 1, length = 9)))
+    if (length(niveau) < 2) {
+      niveau <- seq(min(basefreq[, v]), max(basefreq[, v]), length = 9)
+      niveau <- unique(niveau)
+    }
+  }
+
+  par(mfrow = c(2, 2))
+  graphSinistre(v, "Exposure", "ClaimNb",     basefreq,      "Frequence",       continu = iscontinu, niveau)
+  graphSinistre(v, "Exposure", "ClaimAmount",  basecout,      "Montant",         continu = iscontinu, niveau)
+  graphSinistre(v, "Exposure", "TotalClaim",   basefreq,      "Charge annuelle", continu = iscontinu, niveau)
+  graphSinistre(v, "Exposure", "ClaimAmount",  basecoutattri, "Montant (attr)",  continu = iscontinu, niveau)
+}
+```
+
+### 5.3 Tableaux de frequence par variable qualitative
+
+```{r}
+for (v in var_quali) {
+  cat("\n============================\n")
+  cat("Frequence annuelle par", v, "\n")
+  cat("============================\n")
+
+  freq_by_mod <- aggregate(cbind(ClaimNb, Exposure) ~ get(v),
+                           data = basefreq,
+                           FUN  = sum)
+  names(freq_by_mod)[1] <- v
+  freq_by_mod$Freq_annuelle <- round(freq_by_mod$ClaimNb / freq_by_mod$Exposure, 5)
+  print(freq_by_mod[order(freq_by_mod$Freq_annuelle), ])
+}
+```
+
+### 5.4 Analyse detaillee par variable
+
+```{r}
+# DriverAge 
+v <- "DriverAge"
+niveauv <- seq(min(basefreq[, v]), max(basefreq[, v]), by = 5)
+graphSinistre(v, "Exposure", "ClaimNb", basefreq, "Frequence", continu = TRUE, niveau = niveauv)
+
+basefreq$DriverAge_cl <- cut(basefreq$DriverAge,
+                             breaks = c(16, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 80),
+                             right  = FALSE)
+freq_age <- aggregate(cbind(ClaimNb, Exposure) ~ DriverAge_cl,
+                      data = basefreq, FUN = sum)
+freq_age$Freq_annuelle <- round(freq_age$ClaimNb / freq_age$Exposure, 5)
+print(freq_age)
+
+# CarAge (decoupage granulaire)
+v <- "CarAge"
+breaks_carage <- c(0, 1, 2, 3, 5, 7, 10, 15, 20)
+niveauv <- sort(unique(breaks_carage))
+graphSinistre(v, "Exposure", "ClaimNb", basefreq, "Frequence", continu = TRUE, niveau = niveauv)
+
+basefreq$CarAge_cl <- cut(basefreq$CarAge,
+                          breaks = c(0, 1, 2, 3, 5, 7, 10, 15, 20),
+                          right  = FALSE, include.lowest = TRUE)
+freq_carage <- aggregate(cbind(ClaimNb, Exposure) ~ CarAge_cl,
+                         data = basefreq, FUN = sum)
+freq_carage$Freq_annuelle <- round(freq_carage$ClaimNb / freq_carage$Exposure, 5)
+print(freq_carage)
+```
+
+```{r}
+# ---- Power : analyse par SEVERITE (ClaimAmount moyen) ----
+# Le regroupement se fait sur la severite, pas la frequence
+sev_power <- aggregate(ClaimAmount ~ Power, data = basecoutattri, FUN = mean)
+sev_power$N        <- as.vector(table(basecoutattri$Power))
+sev_power$Severity <- round(sev_power$ClaimAmount, 2)
+sev_power$ClaimAmount <- NULL
+print(sev_power[order(sev_power$Severity), ])
+```
+
+```{r}
+# ---- Density ----
+basefreq$Density_cl <- cut(basefreq$Density,
+                           breaks = c(0, 100, 500, 1000, 5000, Inf),
+                           right  = FALSE)
+freq_density <- aggregate(cbind(ClaimNb, Exposure) ~ Density_cl,
+                          data = basefreq, FUN = sum)
+freq_density$Freq_annuelle <- round(freq_density$ClaimNb / freq_density$Exposure, 5)
+print(freq_density)
+```
+
+## 6. Recodage des variables
+
+### 6.1 Regroupement des modalites
+
+```{r}
+regrouprecode <- function(base, listvar, listlevel)
+{
+  for (i in 1:length(listvar))
+  {
+    if (is.factor(base[, listvar[i]]))
+      levels(base[, listvar[i]]) <- listlevel[[i]]
+    else
+      base[, listvar[i]] <- cut(base[, listvar[i]], listlevel[[i]], include.lowest = TRUE)
+  }
+  base
+}
+
+newPower <- c(
+  "d-e-f-g-k",      
+  "d-e-f-g-k",      
+  "d-e-f-g-k",      
+  "d-e-f-g-k",      
+  "h-i-j",          
+  "h-i-j",          
+  "h-i-j",          
+  "d-e-f-g-k",      
+  "l-m",            
+  "l-m",            
+  "n-o",            
+  "n-o"             
+)
+cbind(levels(basecout$Power), newPower)
+
+newRegion <- c("PC-NPDC-AQUIT", "PDL-BN-HN-LIM", "C-B", "C-B",
+               "PDL-BN-HN-LIM", "IDF", "PDL-BN-HN-LIM", "PC-NPDC-AQUIT",
+               "PDL-BN-HN-LIM", "PC-NPDC-AQUIT")
+cbind(levels(basecout$Region), newRegion)
+
+newBrand <- c("Italy Germany", "Asian", "Italy Germany",
+              "US", "US", "French", "Italy Germany")
+cbind(levels(basecout$Brand), newBrand)
+
+
+newDrivAge <- c(16, 25, 35, 45, 55, 65, 80)
+
+# CarAge : decoupage plus granulaire pour affiner l'etude
+newCarAge  <- c(0, 2, 5, 10, 15, 20)
+newDensity <- c(min(basefreq$Density), 100, 500, 1000, 5000, max(basefreq$Density))
+
+# Suppression des colonnes temporaires creees en section 5.4
+basefreq$DriverAge_cl <- NULL
+basefreq$CarAge_cl    <- NULL
+basefreq$Density_cl   <- NULL
+basefreq$HasClaim     <- NULL
+
+basecoutattri2 <- regrouprecode(basecoutattri,
+                                c("Power", "Region", "Brand", "DriverAge", "CarAge", "Density"),
+                                list(newPower, newRegion, newBrand, newDrivAge, newCarAge, newDensity))
+
+basefreq2 <- regrouprecode(basefreq,
+                           c("Power", "Region", "Brand", "DriverAge", "CarAge", "Density"),
+                           list(newPower, newRegion, newBrand, newDrivAge, newCarAge, newDensity))
+
+basecoutatyp2 <- regrouprecode(basecoutatyp,
+                               c("Power", "Region", "Brand", "DriverAge", "CarAge", "Density"),
+                               list(newPower, newRegion, newBrand, newDrivAge, newCarAge, newDensity))
+
+summary(basecoutattri2)
+summary(basefreq2)
+```
+
+### 6.2 Verification des niveaux de Power apres recodage par severite
+
+```{r}
+# Les 4 groupes de Power bases sur la severite :
+#   n-o | d-e-f-g-k | h-i-j | l-m
+# Verification de la coherence des niveaux obtenus
+levels(basefreq2$Power)
+levels(basecoutattri2$Power)
+
+# Sauvegarde des bases completes recodees (avant decoupage apprentissage/validation)
+write.csv(basefreq2,      file = "basefreq2.csv",      row.names = FALSE)
+write.csv(basecoutattri2, file = "basecoutattri2.csv", row.names = FALSE)
+```
+
+### 6.3 Analyse de correlation
+
+```{r}
+library(corrplot)
+par(mfrow = c(1, 1))
+corrplot(cor(basecout[, c("ClaimAmount", "ClaimNb", "DriverAge", "CarAge", "Exposure","Density")]))
+cor(basecout[, c("ClaimAmount", "ClaimNb", "DriverAge", "CarAge", "Exposure","Density")])
+head(data.frame(basecout))
+```
+
+```{r}
+var.quali <- basecoutattri2[, varlist[varlist != "Exposure"]]
+corr.quali <- matrix(NA, nrow = ncol(var.quali), ncol = ncol(var.quali))
+
+for (i in 1:nrow(corr.quali)) {
+  for (j in 1:ncol(corr.quali)) {
+    if (i <= j)
+      corr.quali[i, j] <- chisq.test(var.quali[, i], var.quali[, j])$p.value
+    else
+      corr.quali[i, j] <- chisq.test(var.quali[, i], var.quali[, j])$statistic
+  }
+}
+rownames(corr.quali) <- colnames(corr.quali) <- varlist[varlist != "Exposure"]
+corr.quali
+```
+
+```{r}
+# Eta² : proportion de variance de ClaimAmount expliquee par chaque variable categorielle
+eta2 <- function(y, x) {
+  ss_total   <- sum((y - mean(y))^2)
+  group_means <- tapply(y, x, mean)
+  group_n     <- tapply(y, x, length)
+  ss_between  <- sum(group_n * (group_means - mean(y))^2)
+  ss_between / ss_total
+}
+
+var_cat <- c("Power", "CarAge", "DriverAge", "Brand", "Gas", "Region", "Density")
+
+eta2_results <- sapply(var_cat, function(v)
+  eta2(basecoutattri2$ClaimAmount, basecoutattri2[, v]))
+
+eta2_df <- data.frame(
+  Variable = var_cat,
+  Eta2     = round(eta2_results, 4),
+  Eta      = round(sqrt(eta2_results), 4)
+)
+eta2_df <- eta2_df[order(eta2_df$Eta2, decreasing = TRUE), ]
+print(eta2_df)
+
+barplot(eta2_df$Eta2,
+        names.arg = eta2_df$Variable,
+        col  = "steelblue",
+        main = "Eta² : part de variance de ClaimAmount par variable",
+        ylab = "Eta²",
+        las  = 2)
+```
+
+### 6.4 Modalites de reference
+
+```{r}
+idCateg <- sapply(basefreq2, class) == "factor"
+idCateg["PolicyID"] <- FALSE
+nameCateg <- colnames(basefreq2)[idCateg]
+
+refCateg <- sapply(nameCateg, function(v)
+  names(which.max(table(basefreq2[, v]))))
+
+data.frame(variable = nameCateg, ref = refCateg)
+
+for (v in nameCateg)
+  print(levels(basefreq2[, v]))
+
+for (v in nameCateg)
+{
+  basecoutattri2[, v] <- relevel(basecoutattri2[, v], ref = refCateg[v])
+  basefreq2[, v]      <- relevel(basefreq2[, v],      ref = refCateg[v])
+  # basecoutatyp2 est tres petit (top 2.5%) : certaines modalites peuvent etre absentes
+  if (refCateg[v] %in% levels(basecoutatyp2[, v]))
+    basecoutatyp2[, v] <- relevel(basecoutatyp2[, v], ref = refCateg[v])
+}
+
+idref <- apply(sapply(1:length(nameCateg), function(j)
+  basefreq2[, nameCateg[j]] == refCateg[nameCateg[j]]), 1, all)
+NROW(basefreq2[idref, ])
+```
+
+## 7. Constitution des echantillons
+
+### 7.1 Partitionnement apprentissage / validation (80/20)
+
+```{r}
+set.seed(123)
+prop <- 4/5
+n    <- NROW(basefreq2)
+id.app <- sample(1:n, n * prop)
+
+basefreq2.app  <- basefreq2[id.app, ]
+basefreq2.test <- basefreq2[-id.app, ]
+
+cat("Apprentissage :", nrow(basefreq2.app),  "\n")
+cat("Validation    :", nrow(basefreq2.test), "\n")
+
+ID.app <- sort(unique(basefreq2.app$PolicyID))
+
+basecoutattri2.app  <- basecoutattri2[basecoutattri2$PolicyID %in% ID.app, ]
+basecoutattri2.test <- basecoutattri2[!basecoutattri2$PolicyID %in% ID.app, ]
+
+basecoutatyp2.app  <- basecoutatyp2[basecoutatyp2$PolicyID %in% ID.app, ]
+basecoutatyp2.test <- basecoutatyp2[!basecoutatyp2$PolicyID %in% ID.app, ]
+
+cat("Attri app  :", nrow(basecoutattri2.app),  "\n")
+cat("Attri test :", nrow(basecoutattri2.test), "\n")
+
+write.csv(basefreq2.app,       file = "basefreq2.app.csv",       row.names = FALSE)
+write.csv(basefreq2.test,      file = "basefreq2.test.csv",      row.names = FALSE)
+write.csv(basecoutattri2.app,  file = "basecoutattri2.app.csv",  row.names = FALSE)
+write.csv(basecoutattri2.test, file = "basecoutattri2.test.csv", row.names = FALSE)
+write.csv(basecoutatyp2.app,   file = "basecoutatyp2.app.csv",   row.names = FALSE)
+write.csv(basecoutatyp2.test,  file = "basecoutatyp2.test.csv",  row.names = FALSE)
+```
+
+### 7.2 Verification et recapitulatif
+
+```{r}
+cat("basefreq2.app        :", nrow(basefreq2.app),       "polices\n")
+cat("basefreq2.test       :", nrow(basefreq2.test),      "polices\n")
+cat("basecoutattri2.app   :", nrow(basecoutattri2.app),  "sinistres\n")
+cat("basecoutattri2.test  :", nrow(basecoutattri2.test), "sinistres\n")
+
+# Sauvegarde de la base originale avant modifications de niveaux en modelisation
+basefreq2.app.orig <- basefreq2.app
+
+# Verification des stats de base sur la severite
+summary(basecoutattri2.app$ClaimAmount)
+sd(basecoutattri2.app$ClaimAmount)
+
+summary(basecoutattri2.test$ClaimAmount)
+
+
+# Fonctions utilitaires
+RMSE    <- function(x, y) sqrt(mean((x - y)^2))
+gofstat <- function(x) c("loglik" = logLik(x), "AIC" = AIC(x), "BIC" = BIC(x), "deviance" = deviance(x))
+
+
+```
+
+### 7.3 Formules de modelisation
+
+```{r}
+freqform  <- ClaimNb ~ Power + CarAge + DriverAge + Brand + Gas + Region + Density +
+  offset(log(Exposure))
+freqform2 <- ClaimNb ~ Power + CarAge + DriverAge + Brand + Gas + Region + Density
+```
+
+## 8. Modelisation de la frequence
+
+### 8.1 Modeles de Poisson
+
+```{r}
+hist(basefreq2.app$Exposure,
+     main = "Distribution de l'exposition - base apprentissage",
+     xlab = "Exposure (fraction d'annee)", col = "lightblue")
+
+# Modele nul (sans variables explicatives)
+pois0 <- glm("ClaimNb ~ 1 + offset(log(Exposure))",
+             family = poisson("log"), data = basefreq2.app)
+summary(pois0)
+# exp(coef(pois0)) = frequence annuelle globale = 0.0698 sinistre/an
+
+# Modele complet avec toutes les variables
+pois1 <- glm(freqform,  family = poisson("log"), data = basefreq2.app)
+summary(pois1)
+
+pois2 <- glm(freqform2, family = poisson("log"), data = basefreq2.app)
+summary(pois2)
+```
+
+
+
+### 8.2 Selection automatique de variables (stepAIC sur facteurs)
+
+```{r}
+poisautomatic <- glm(ClaimNb ~ offset(log(Exposure)) + Power + CarAge + DriverAge
+                     + Brand + Gas + Region + Density,
+                     family = poisson("log"), data = basefreq2.app)
+#library(MASS)
+poisautomatic2 <- stepAIC(poisautomatic, direction = "both")
+summary(poisautomatic)
+summary(poisautomatic2)
+```
+
+### 8.3 Modele Poisson final sur matrice de design (variables indicatrices)
+
+```{r}
+# Construction de la matrice de design et creation automatique de la formule
+basefreq3.app <- cbind(model.matrix(
+  ~ Power + CarAge + DriverAge + Brand + Gas + Region + Density,
+  data = basefreq2.app)[, -1],
+  Exposure = basefreq2.app$Exposure,
+  ClaimNb  = basefreq2.app$ClaimNb)
+basefreq3.app <- as.data.frame(basefreq3.app)
+
+cname     <- paste0("`", colnames(basefreq3.app)[-(27:28)], "`")
+freqform4 <- formula(paste("ClaimNb ~", paste(cname, collapse = " + "),
+                           "+ offset(log(Exposure))"))
+
+pois4 <- glm(freqform4, family = poisson("log"), data = basefreq3.app)
+summary(pois4)
+```
+
+```{r}
+# StepAIC sur la matrice de design
+stepAIC(pois4, direction = "both")
+```
+
+```{r}
+# Modele Poisson final (pois5) : variables retenues par stepAIC
+pois5 <- glm(formula = ClaimNb ~ `Powerh-i-j` + `Powern-o` + `CarAge(10,15]` +
+    `CarAge(15,20]` + `CarAge(2,5]` + `CarAge[0,2]` + `DriverAge(45,55]` +
+    `DriverAge[16,25]` + BrandAsian + `BrandItaly Germany` +
+    BrandUS + GasRegular + `Density(100,500]` + `Density(1e+03,5e+03]` +
+    `Density(500,1e+03]` + `Density(5e+03,2.7e+04]` + Exposure +
+    offset(log(Exposure)), family = poisson("log"), data = basefreq3.app)
+summary(pois5)
+```
+
+```{r}
+# Construction de la matrice test et predictions Poisson
+basefreq3.test <- cbind(
+  model.matrix(ClaimNb ~ Power + CarAge + DriverAge + Brand + Gas + Region + Density +
+               offset(log(Exposure)), data = basefreq2.test)[, -1],
+  Exposure = basefreq2.test$Exposure,
+  ClaimNb  = basefreq2.test$ClaimNb)
+basefreq3.test <- as.data.frame(basefreq3.test)
+
+basefreq2.test$poisson.pred <- predict(pois5, type = "response", newdata = basefreq3.test)
+```
+
+```{r}
+# Verification : sinistres predits vs observes sur la base test
+sum(basefreq2.test$poisson.pred)
+sum(basefreq2.test$ClaimNb)
+```
+
+```{r}
+cbind("pois5" = gofstat(pois5), "pois2" = gofstat(pois2), "poisautomatic" = gofstat(poisautomatic),
+      "poisautomatic2" = gofstat(poisautomatic2), "pois1" = gofstat(pois1), "pois0" = gofstat(pois0))
+```
+
+### 8.4 Test de surdispersion et Binomiale negative
+
+```{r}
+#install.packages("AER")
+#library(AER)
+
+# Test de dispersion (H0 : pas de surdispersion)
+disp_test <- dispersiontest(pois5, alternative = "greater")
+print(disp_test)
+# On rejette H0 -> surdispersion -> justifie la Binomiale negative
+```
+
+```{r}
+# Modele Binomiale negative
+#library(MASS)
+nbinom1 <- glm.nb(formula = ClaimNb ~ `Powerh-i-j` + `Powern-o` + `CarAge(10,15]` +
+    `CarAge(15,20]` + `CarAge(2,5]` + `CarAge[0,2]` + `DriverAge(45,55]` +
+    `DriverAge[16,25]` + BrandAsian + `BrandItaly Germany` +
+    BrandUS + GasRegular + `Density(100,500]` + `Density(1e+03,5e+03]` +
+    `Density(500,1e+03]` + `Density(5e+03,2.7e+04]` + Exposure +
+    offset(log(Exposure)), data = basefreq3.app)
+summary(nbinom1)
+```
+
+```{r}
+# Comparaison Poisson vs Binomiale negative
+cbind("poisson" = gofstat(pois5), "nbinom" = gofstat(nbinom1))
+```
+
+```{r}
+basefreq2.test$nbinom.pred <- predict(nbinom1, type = "response", newdata = basefreq3.test)
+par(mfrow = 1:2)
+hist(basefreq2.test$poisson.pred)
+hist(basefreq2.test$nbinom.pred)
+basefreq2.test
+```
+
+```{r}
+# Comparaison graphique des predictions par age du conducteur
+graphSinistre("DriverAge", "Exposure", "poisson.pred", basefreq2.test, "Poisson",   continu = FALSE)
+graphSinistre("DriverAge", "Exposure", "nbinom.pred",  basefreq2.test, "Neg binom", continu = FALSE)
+```
+
+### 8.5 Modeles a inflation de zeros (ZIP et ZINB)
+
+```{r}
+#install.packages("pscl")
+library(pscl)
+
+# ZIP1 : même formule pour les deux composantes
+zipois1 <- zeroinfl(freqform, data = basefreq2.app, dist = "poisson", link = "logit")
+summary(zipois1)
+```
+
+```{r}
+# ZIP2 : formules differenciees pour les deux composantes
+freqformZI <- "ClaimNb ~ CarAge + DriverAge + Brand + Gas +
+    Density + offset(log(Exposure)) | Power + CarAge + DriverAge + Region +
+    Density + offset(log(Exposure))"
+zipois2 <- zeroinfl(formula(freqformZI), data = basefreq2.app, dist = "poisson", link = "logit")
+summary(zipois2)
+```
+
+```{r}
+# Comparaison ZIP1 vs ZIP2 vs NBINOM
+cbind("zip1" = gofstat(zipois1), "zip2" = gofstat(zipois2))
+cbind("zip2" = c(gofstat(zipois2), NA), "nbinom" = gofstat(nbinom1))
+```
+
+```{r}
+# ZINB : Zero-Inflated Binomiale negative
+ZINB1 <- zeroinfl(formula(freqformZI), data = basefreq2.app, dist = "negbin", link = "logit")
+summary(ZINB1)
+```
+
+```{r}
+cbind("zinb1" = c(gofstat(ZINB1), NA), "nbinom" = gofstat(nbinom1))
+```
+
+### 8.6 Modeles Hurdle (Zero-Modified)
+
+```{r}
+freqZM <- "ClaimNb ~ DriverAge + Brand + Region +
+    Density + offset(log(Exposure)) | Power + CarAge + DriverAge + Brand + Gas + Region +
+    Density + offset(log(Exposure))"
+
+# ZMP1 : Zero Modified Poisson avec formule complete
+ZMP1 <- hurdle(freqform, data = basefreq2.app, dist = "poisson", link = "logit")
+summary(ZMP1)
+```
+
+```{r}
+# ZMP2 : Zero Modifierd Poisson avec formules differenciees
+ZMP2 <- hurdle(formula(freqZM), data = basefreq2.app, dist = "poisson", link = "logit")
+summary(ZMP2)
+```
+
+```{r}
+# ZMNB2 : Zero Modified Binomiale negative
+ZMNB2 <- hurdle(formula(freqZM), data = basefreq2.app, dist = "negbin", link = "logit")
+summary(ZMNB2)
+```
+
+### 8.7 Comparaison globale des modeles de frequence
+
+```{r}
+cbind("poisson"   = gofstat(pois5),
+      "nbinom"    = gofstat(nbinom1),
+      "ZMPoisson" = c(gofstat(ZMP2),  NA),
+      "ZMNB"      = c(gofstat(ZMNB2), NA))
+```
+
+## 9. Modelisation de la severite
+
+### 9.1 Modele Gamma
+
+```{r}
+gamma1 <- glm(ClaimAmount ~ Power + CarAge + DriverAge + Brand + Gas + Region + Density,
+              data = basecoutattri2.app, family = Gamma("log"))
+dim(basecoutattri2.app)
+```
+
+```{r}
+summary(gamma1)
+```
+
+```{r}
+stepAIC(gamma1, direction = "both")
+```
+
+```{r}
+# Modele Gamma reduit apres selection
+gamma2 <- glm(formula = ClaimAmount ~ Power + CarAge + DriverAge + Brand,
+    family = Gamma("log"), data = basecoutattri2.app)
+summary(gamma2)
+```
+
+```{r}
+# Modele Gamma sur matrice de design + selection automatique
+basecoutattri3.app <- cbind(
+  model.matrix(ClaimAmount ~ CarAge + DriverAge + Brand + Gas +
+    Region + Density,
+               data = basecoutattri2.app)[, -1],
+  ClaimAmount = basecoutattri2.app$ClaimAmount)
+basecoutattri3.app <- as.data.frame(basecoutattri3.app)
+
+gamma3 <- glm(ClaimAmount ~ ., data = basecoutattri3.app, family = Gamma("log"))
+
+stepAIC(gamma3, direction = "both")
+```
+
+```{r}
+# Modele Gamma final (gamma4) : variables retenues par stepAIC
+gamma4 <- glm(formula = ClaimAmount ~ `CarAge(2,5]` + `CarAge(10,15]` + 
+    `DriverAge[16,25]` + `DriverAge(65,80]` + BrandAsian + GasRegular + 
+    `Density(1e+03,5e+03]`, family = Gamma("log"), data = basecoutattri3.app)
+summary(gamma4)
+```
+
+### 9.2 Gaussienne inverse
+
+```{r}
+# 1. Ajuster un modele Gamma pour initialiser les coefficients
+fit_gamma <-glm(formula = ClaimAmount ~ `CarAge(2,5]` + `CarAge(10,15]` + 
+    `DriverAge[16,25]` + `DriverAge(65,80]` + BrandAsian + GasRegular + 
+    `Density(1e+03,5e+03]`, family = Gamma("log"), data = basecoutattri3.app)
+
+# 2. Gaussienne inverse avec point de depart issu du Gamma (pour stabilite numerique)
+igauss4 <- glm(formula = ClaimAmount ~ `CarAge(2,5]` + `CarAge(10,15]` + 
+    `DriverAge[16,25]` + `DriverAge(65,80]` + BrandAsian + GasRegular + 
+    `Density(1e+03,5e+03]`,
+    family = inverse.gaussian(link = "log"),
+    data  = basecoutattri3.app,
+    start = coef(fit_gamma))
+summary(igauss4)
+```
+
+```{r}
+cbind("gamma"     = gofstat(gamma4),
+      "inv gauss" = gofstat(igauss4))
+```
+
+```{r}
+# Predictions Gamma sur la base test
+basecoutattri3.test <- cbind(
+  model.matrix(ClaimAmount ~ Power + CarAge + DriverAge + Brand + Gas + Region + Density,
+               data = basecoutattri2.test)[, -1],
+  ClaimAmount = basecoutattri2.test$ClaimAmount)
+basecoutattri3.test <- as.data.frame(basecoutattri3.test)
+
+basecoutattri2.test$gamma.pred <- predict(gamma4, newdata = basecoutattri3.test, type = "response")
+
+basecoutattri2.test
+```
+
+### 9.3 Log-normale
+
+```{r}
+# Modele log-normal complet
+gauss1 <- glm(log(ClaimAmount) ~ ., data = basecoutattri3.app, family = gaussian("identity"))
+summary(gauss1)
+```
+
+```{r}
+stepAIC(gauss1, direction = "both")
+```
+
+```{r}
+# Modele log-normal reduit (gauss2) : variables retenues par stepAIC
+gauss2 <- glm(formula = log(ClaimAmount) ~ `CarAge(15,20]` + `DriverAge[16,25]` + 
+    `DriverAge(55,65]` + `DriverAge(65,80]` + BrandAsian + GasRegular + 
+    `Density(1e+03,5e+03]`, family = gaussian("identity"), data = basecoutattri3.app)
+summary(gauss2)
+```
+
+```{r}
+# Fonctions de log-vraisemblance et AIC pour la loi log-normale
+loglik.lnorm <- function(x)
+{
+  meanlog <- predict(x)
+  sdlog   <- sqrt(summary(x)$dispersion)
+  sum(dlnorm(x$data$ClaimAmount, meanlog, sdlog, log = TRUE))
+}
+aic.lnorm <- function(x)
+{
+  -2 * loglik.lnorm(x) + 2 * length(coef(x))
+}
+```
+
+### 9.4 Comparaison des modeles de severite
+
+```{r}
+# Criteres d'adequation : Gamma vs Gaussienne inverse vs Log-normale
+cbind(gamma            = gofstat(gamma4),
+      inverse.gaussian = gofstat(igauss4),
+      lognormal        = c(loglik.lnorm(gauss2), aic.lnorm(gauss2), NA, NA))
+```
+
+```{r}
+# Predictions log-normales sur la base test (correction du biais)
+sig2 <- summary(gauss2)$dispersion
+basecoutattri2.test$lnorm.pred <- exp(
+  predict(gauss2, newdata = basecoutattri3.test, type = "response") + sig2 / 2)
+```
+
+```{r}
+# RMSE sur la base test : comparaison Gamma vs Log-normale
+RMSE(basecoutattri2.test$ClaimAmount, basecoutattri2.test$gamma.pred)
+RMSE(basecoutattri2.test$ClaimAmount, basecoutattri2.test$lnorm.pred)
+```
+
+## 10. Prime pure finale de référence et par profil de risque
+
+```{r}
+
+prime.cat <- 37.02393
+beta_freq <- coef(nbinom1)
+beta_sev  <- coef(gamma4)
+
+# ── Profil de RÉFÉRENCE ──────────────────────────────────────────────────────
+eta_freq_ref <- beta_freq["(Intercept)"]
+eta_sev_ref  <- beta_sev["(Intercept)"]
+lambda_ref   <- as.numeric(exp(eta_freq_ref))
+s_ref        <- as.numeric(exp(eta_sev_ref))
+prime_ref    <- lambda_ref * s_ref + prime.cat
+
+# ── Profil RISQUÉ ────────────────────────────────────────────────────────────
+# Fréquence : Power h-i-j  +  DriverAge [16,25]  +  Density (5k, 27k]
+# Sévérité  : DriverAge [16,25]
+eta_freq_risque <- beta_freq["(Intercept)"] +
+                   beta_freq["`Powerh-i-j`"]  +
+                   beta_freq["`DriverAge[16,25]`"] +
+                   beta_freq["`Density(5e+03,2.7e+04]`"]
+
+eta_sev_risque  <- beta_sev["(Intercept)"] +
+                   beta_sev["`DriverAge[16,25]`"]
+lambda_risque   <- as.numeric(exp(eta_freq_risque))
+s_risque        <- as.numeric(exp(eta_sev_risque))
+prime_risque    <- lambda_risque * s_risque + prime.cat
+
+# ── Profil FAVORABLE ─────────────────────────────────────────────────────────
+# Fréquence : Brand Asian  +  CarAge (15,20]
+# Sévérité  : Brand Asian
+eta_freq_fav <- beta_freq["(Intercept)"] +
+                beta_freq["BrandAsian"]  +
+                beta_freq["`CarAge(15,20]`"]
+eta_sev_fav  <- beta_sev["(Intercept)"] +
+                beta_sev["BrandAsian"]
+lambda_fav   <- as.numeric(exp(eta_freq_fav))
+s_fav        <- as.numeric(exp(eta_sev_fav))
+prime_fav    <- lambda_fav * s_fav + prime.cat
+
+# ── Tableau récapitulatif ────────────────────────────────────────────────────
+resultats <- data.frame(
+  Profil       = c("Référence", "Risqué", "Favorable"),
+  Frequence    = round(c(lambda_ref,  lambda_risque,  lambda_fav),  4),
+  Severite_EUR = round(c(s_ref,       s_risque,       s_fav),       2),
+  CAT_EUR      = prime.cat,
+  Prime_pure   = round(c(prime_ref,   prime_risque,   prime_fav),   2)
+)
+print(resultats)
+```
+
