@@ -2,7 +2,7 @@
 
 End-to-end pricing pipeline for a French motor third-party liability portfolio, comparing a classical GLM approach against a machine-learning approach with extreme-value theory (EVT) for large claims. Frequency-severity decomposition on both sides, hybrid attritional / atypical treatment on the ML side, and reference-policyholder benchmark for direct comparison.
 
-Academic project (M2 Actuariat, ISFA — Advanced Pricing / *Projet d'Assurance Tarification et Provisionnement*), supervised by Prof. Esterina Masiello. Co-authored with S. Diouf, C. A. D. Kouamé and S. Ouattara.
+Academic project (M2 Actuariat, ISFA — Advanced Pricing / *Projet d'Assurance Tarification et Provisionnement*), Co-authored with S. Diouf, C. A. D. Kouamé and S. Ouattara.
 
 ## Data
 
